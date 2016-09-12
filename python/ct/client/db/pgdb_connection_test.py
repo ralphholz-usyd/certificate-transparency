@@ -16,6 +16,7 @@ class pgSQLConnectionTest(unittest.TestCase):
 
     def setUp(self):
         with pgcon.pgSQLConnection(*TEST_CONNECTION) as conn:
+            conn.execute("SET client_min_messages TO WARNING")
             conn.execute("DROP TABLE IF EXISTS words CASCADE")
 
     def test_connection_works(self):
