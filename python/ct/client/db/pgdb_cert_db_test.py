@@ -8,7 +8,7 @@ from ct.client.db import pgdb_cert_db
 from ct.client.db import cert_db_test
 import gflags
 
-from ct.client.db.pgsql_test_config import TEST_CONN_PARAMS
+from ct.client.db.pgdb_test_config import TEST_CONN_PARAMS
 
 class pgSQLCertDBTest(unittest.TestCase, cert_db_test.CertDBTest):
     def setUp(self):
