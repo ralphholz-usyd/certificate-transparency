@@ -9,3 +9,4 @@ Twisted>=12.1
 bitstring
 pycrypto>=2.5
 jsonschema
+PyGreSQL
