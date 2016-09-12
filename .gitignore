@@ -132,3 +132,6 @@
 
 # zsh ant target cache
 .ant_targets
+
+# Python build dir
+/python/build
