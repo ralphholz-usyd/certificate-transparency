@@ -10,3 +10,4 @@ bitstring
 pycrypto>=2.5
 jsonschema
 PyGreSQL
+pyopenssl

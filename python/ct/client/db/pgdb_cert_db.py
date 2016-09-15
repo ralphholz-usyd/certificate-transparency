@@ -40,7 +40,7 @@ class pgSQLCertDB(cert_db.CertDB):
                 conn.commit()
             try:
                 conn.execute("CREATE INDEX certs_by_subject "
-                             "on subject_names(name)")
+                             "on subject_names(name) TABLESPACE ctscan_indexes")
             except pgdb.ProgrammingError as e:
                 if "already exists" not in str(e):
                     raise e

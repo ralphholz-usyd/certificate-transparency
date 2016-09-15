@@ -6,11 +6,13 @@ import os
 import sys
 import requests
 
+from ct.client.db import pgdb_connection as pgdbcon
 from ct.client.db import sqlite_connection as sqlitecon
 from ct.client import prober
 from ct.client.db import sqlite_log_db
 from ct.client.db import sqlite_temp_db
 from ct.client.db import sqlite_cert_db
+from ct.client.db import pgdb_cert_db
 from ct.proto import client_pb2
 
 FLAGS = gflags.FLAGS
@@ -25,6 +27,13 @@ gflags.DEFINE_string("ct_sqlite_cert_db", "/tmp/ct_cert", "Location of "
 gflags.DEFINE_string("monitor_state_dir", "/tmp/ct_monitor",
                      "Filename prefix for monitor state. State for a given log "
                      "will be stored in a monitor_state_dir/log_id file")
+
+PG_LOGIN = [
+    'ctscan',
+    '127.0.0.1',
+    'ctscan',
+    'ctscan'
+]
 
 def create_directory(directory):
     if not os.path.exists(directory):
@@ -45,8 +54,8 @@ if __name__ == '__main__':
         sqlitecon.SQLiteConnectionManager(FLAGS.ct_sqlite_temp_dir + "/meta"),
                                           FLAGS.ct_sqlite_temp_dir)
 
-    sqlite_cert_db = sqlite_cert_db.SQLiteCertDB(
-            sqlitecon.SQLiteConnectionManager(FLAGS.ct_sqlite_cert_db))
+    sqlite_cert_db = pgdb_cert_db.pgSQLCertDB(
+            pgdbcon.pgSQLConnectionManager(*PG_LOGIN))
 
     ctlogs = client_pb2.CtLogs()
     with open(FLAGS.ctlog_config, "r") as config:
