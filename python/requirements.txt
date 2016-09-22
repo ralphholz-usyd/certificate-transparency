@@ -11,3 +11,4 @@ pycrypto>=2.5
 jsonschema
 PyGreSQL
 pyopenssl
+service_identity
