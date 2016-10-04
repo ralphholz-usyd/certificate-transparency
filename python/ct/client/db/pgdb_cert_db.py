@@ -79,6 +79,13 @@ class pgSQLCertDB(cert_db.CertDB):
         try:
             # Need None type for empty strings inserted into INTEGER field
             cert_version = None if cert.version == '' else cert.version
+
+            #check if cert already exists
+            cursor.execute("SELECT * FROM certs WHERE sha256_hash = %s",
+                           (pgdb.Binary(cert.sha256_hash),))
+            if cursor.rowcount > 0:
+              return
+
             cursor.execute("INSERT INTO certs(log, id, sha256_hash, cert, "
                            "version, serial_number) VALUES(%s, %s, %s, %s, %s, %s) ",
                            (log_key, index,
@@ -86,8 +93,8 @@ class pgSQLCertDB(cert_db.CertDB):
                             pgdb.Binary(cert.der),
                             cert_version,
                             cert.serial_number,))
-        except pgdb.IntegrityError:
-            # cert already exists
+        except pgdb.DatabaseError:
+            # cert already exists or something went horribly wrong
             return
         for sub in cert.subject:
             cursor.execute("INSERT INTO subject(log, cert_id, type, name)"
