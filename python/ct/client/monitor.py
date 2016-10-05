@@ -162,9 +162,9 @@ class Monitor(object):
                             self.__get_audited_sth(new_sth,
                                                    client_pb2.UNVERIFIED))
         try:
-            self.logging.debug("got proof for (%s, %s): %s",
-                old_sth.tree_size, new_sth.tree_size,
-                map(lambda b: b[:8].encode("base64")[:-2] + "...", proof))
+            self.logging.debug("got proof for (%s, %s): %s" %
+                (old_sth.tree_size, new_sth.tree_size,
+                map(lambda b: b[:8].encode("base64")[:-2] + "...", proof)))
             self.__verifier.verify_sth_consistency(old_sth, new_sth, proof)
         except error.VerifyError as e:
             # catches both ConsistencyError and ProofError. when alerts are
@@ -344,8 +344,8 @@ class Monitor(object):
         self.__report.scan_der_certs(der_certs)
 
     def _scan_entries_errback(self, e):
-        self.logging.error("Failed to scan entries from %s: %s",
-                      self.servername, e)
+        self.logging.error("Failed to scan entries from %s: %s" %
+                      (self.servername, e))
         self._update_unverified_data(self._verified_tree)
         return e
 
@@ -442,8 +442,8 @@ class Monitor(object):
         return d
 
     def _update_entries_errback(self, failure):
-        self.logging.error("Updating entries from %s failed: %s",
-                      self.servername, failure)
+        self.logging.error("Updating entries from %s failed: %s" %
+                      (self.servername, failure))
         return False
 
     def _verify_entries(self):
