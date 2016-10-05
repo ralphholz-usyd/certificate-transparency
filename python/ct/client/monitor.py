@@ -461,7 +461,7 @@ class Monitor(object):
         d = self._verify_consistency(partial_sth, self.__state.pending_sth)
 
         def set_verified_tree(result, new_tree, new_entries_count):
-            self.logging.info("Verified %d entries", (new_entries_count))
+            self.logging.info("Verified %d entries" % (new_entries_count))
             self._set_verified_tree(new_tree)
             return True
 
