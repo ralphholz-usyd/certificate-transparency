@@ -36,6 +36,9 @@ class LoggingWrapper(object):
   def info(self, message):
     self.log.info("(%s) %s" % (self.log_server, message))
 
+  def debug(self, message):
+    self.log.debug("(%s) %s" % (self.log_server, message))
+
 
 class Monitor(object):
     def __init__(self, client, verifier, hasher, db, cert_db, log_key,
