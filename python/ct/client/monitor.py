@@ -375,9 +375,9 @@ class Monitor(object):
                 return False
             self.result = result
             if result < self._query_size:
-                monitor.logging.error("Failed to fetch all entries: expected tree size "
-                              "%d vs retrieved tree size %d" %
-                              (self._end + 1, self._next_sequence_number))
+                self._monitor.logging.error("Failed to fetch all entries: expected tree size "
+                                            "%d vs retrieved tree size %d" %
+                                            (self._end + 1, self._next_sequence_number))
                 self.consumed.callback(False)
                 return False
             # check that the batch is consistent with the eventual pending_sth
@@ -387,8 +387,8 @@ class Monitor(object):
 
         def consume(self, entry_batch):
             self._fetched += len(entry_batch)
-            monitor.logging.info("Fetched %d entries (total: %d from %d)" %
-                         (len(entry_batch), self._fetched, self._query_size))
+            self._monitor.logging.info("Fetched %d entries (total: %d from %d)" %
+                                       (len(entry_batch), self._fetched, self._query_size))
 
             scan = threads.deferToThread(
                     self._monitor._scan_entries,
