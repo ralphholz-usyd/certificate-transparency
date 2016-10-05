@@ -1,5 +1,4 @@
 import gflags
-import logging
 
 from ct.client import entry_decoder
 from ct.client import state
@@ -17,28 +16,28 @@ FLAGS = gflags.FLAGS
 gflags.DEFINE_integer("entry_write_batch_size", 1000, "Maximum number of "
                       "entries to batch into one database write")
 
-def wrap_logging(log_server):
+class LoggingWrapper(object):
   """
   Wrap the logging module functions with our own versions which include the
   URL of the current CT log.
   """
-  l = logging # abbreviate the logging module
+  import logging as log
 
-  # store the unwrapped versions
-  u_error, u_warn, u_info = l.error, l.warning, l.info
+  def __init__(self, log_server = None):
+    self.log_server = log_server
 
   # define our wrappers
-  def error(message):
-    u_error("(%s) %s" % (log_server, message))
+  def error(self, message):
+    self.log.error("(%s) %s" % (self.log_server, message))
 
-  def warning(message):
-    u_warn("(%s) %s" % (log_server, message))
+  def warning(self, message):
+    self.log.warning("(%s) %s" % (self.log_server, message))
 
-  def info(message):
-    u_info("(%s) %s" % (log_server, message))
+  def info(self, message):
+    self.log.info("(%s) %s" % (self.log_server, message))
 
-  # redefine each logging function
-  l.error, l.warning, l.info = error, warning, info
+
+logging = LoggingWrapper()
 
 class Monitor(object):
     def __init__(self, client, verifier, hasher, db, cert_db, log_key,
@@ -54,7 +53,7 @@ class Monitor(object):
                                    if db.get_log_id(l.log_server) == log_key)
                                  , None)
 
-        wrap_logging(self.__log_server)
+        logging.log_server = self.__log_server
 
         # TODO(ekasper): once consistency checks are in place, also load/store
         # Merkle tree info.
