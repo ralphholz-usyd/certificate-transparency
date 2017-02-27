@@ -28,6 +28,7 @@ gflags.DEFINE_string("monitor_state_dir", "/tmp/ct_monitor",
                      "Filename prefix for monitor state. State for a given log "
                      "will be stored in a monitor_state_dir/log_id file")
 
+# TODO: Obviously change this to use gflags instead of hard-coding passwords
 PG_LOGIN = [
     'ctscan',
     '127.0.0.1',
