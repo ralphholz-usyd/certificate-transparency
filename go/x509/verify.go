@@ -5,6 +5,8 @@
 package x509
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"runtime"
@@ -32,6 +34,9 @@ const (
 	// IncompatibleUsage results when the certificate's key usage indicates
 	// that it may only be used for a different purpose.
 	IncompatibleUsage
+	// NameMismatch results when the subject name of a parent certificate
+	// does not match the issuer name in the child.
+	NameMismatch
 )
 
 // CertificateInvalidError results when an odd error occurs. Users of this
@@ -53,6 +58,8 @@ func (e CertificateInvalidError) Error() string {
 		return "x509: too many intermediates for path length constraint"
 	case IncompatibleUsage:
 		return "x509: certificate specifies an incompatible key usage"
+	case NameMismatch:
+		return "x509: issuer name does not match subject from issuing certificate"
 	}
 	return "x509: unknown error"
 }
@@ -86,12 +93,16 @@ func (h HostnameError) Error() string {
 			valid = c.Subject.CommonName
 		}
 	}
+
+	if len(valid) == 0 {
+		return "x509: certificate is not valid for any names, but wanted to match " + h.Host
+	}
 	return "x509: certificate is valid for " + valid + ", not " + h.Host
 }
 
 // UnknownAuthorityError results when the certificate issuer is unknown
 type UnknownAuthorityError struct {
-	cert *Certificate
+	Cert *Certificate
 	// hintErr contains an error that may be helpful in determining why an
 	// authority wasn't found.
 	hintErr error
@@ -107,8 +118,9 @@ func (e UnknownAuthorityError) Error() string {
 		if len(certName) == 0 {
 			if len(e.hintCert.Subject.Organization) > 0 {
 				certName = e.hintCert.Subject.Organization[0]
+			} else {
+				certName = "serial:" + e.hintCert.SerialNumber.String()
 			}
-			certName = "serial:" + e.hintCert.SerialNumber.String()
 		}
 		s += fmt.Sprintf(" (possibly because of %q while trying to verify candidate authority certificate %q)", e.hintErr, certName)
 	}
@@ -117,11 +129,20 @@ func (e UnknownAuthorityError) Error() string {
 
 // SystemRootsError results when we fail to load the system root certificates.
 type SystemRootsError struct {
+	Err error
 }
 
-func (e SystemRootsError) Error() string {
-	return "x509: failed to load system roots and no roots provided"
+func (se SystemRootsError) Error() string {
+	msg := "x509: failed to load system roots and no roots provided"
+	if se.Err != nil {
+		return msg + "; " + se.Err.Error()
+	}
+	return msg
 }
+
+// errNotParsed is returned when a certificate without ASN.1 contents is
+// verified. Platform-specific verification needs the ASN.1 contents.
+var errNotParsed = errors.New("x509: missing ASN.1 contents; use ParseCertificate")
 
 // VerifyOptions contains parameters for Certificate.Verify. It's a structure
 // because other PKIX verification APIs have ended up needing many options.
@@ -133,7 +154,7 @@ type VerifyOptions struct {
 	DisableTimeChecks bool
 	// KeyUsage specifies which Extended Key Usage values are acceptable.
 	// An empty list means ExtKeyUsageServerAuth. Key usage is considered a
-	// constraint down the chain which mirrors Windows CryptoAPI behaviour,
+	// constraint down the chain which mirrors Windows CryptoAPI behavior,
 	// but not the spec. To accept any key usage, include ExtKeyUsageAny.
 	KeyUsages []ExtKeyUsage
 }
@@ -144,8 +165,40 @@ const (
 	rootCertificate
 )
 
+func matchNameConstraint(domain, constraint string) bool {
+	// The meaning of zero length constraints is not specified, but this
+	// code follows NSS and accepts them as valid for everything.
+	if len(constraint) == 0 {
+		return true
+	}
+
+	if len(domain) < len(constraint) {
+		return false
+	}
+
+	prefixLen := len(domain) - len(constraint)
+	if !strings.EqualFold(domain[prefixLen:], constraint) {
+		return false
+	}
+
+	if prefixLen == 0 {
+		return true
+	}
+
+	isSubdomain := domain[prefixLen-1] == '.'
+	constraintHasLeadingDot := constraint[0] == '.'
+	return isSubdomain != constraintHasLeadingDot
+}
+
 // isValid performs validity checks on the c.
 func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *VerifyOptions) error {
+	if len(currentChain) > 0 {
+		child := currentChain[len(currentChain)-1]
+		if !bytes.Equal(child.RawIssuer, c.RawSubject) {
+			return CertificateInvalidError{c, NameMismatch}
+		}
+	}
+
 	if !opts.DisableTimeChecks {
 		now := opts.CurrentTime
 		if now.IsZero() {
@@ -158,12 +211,9 @@ func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *V
 
 	if len(c.PermittedDNSDomains) > 0 {
 		ok := false
-		for _, domain := range c.PermittedDNSDomains {
-			if opts.DNSName == domain ||
-				(strings.HasSuffix(opts.DNSName, domain) &&
-					len(opts.DNSName) >= 1+len(domain) &&
-					opts.DNSName[len(opts.DNSName)-len(domain)-1] == '.') {
-				ok = true
+		for _, constraint := range c.PermittedDNSDomains {
+			ok = matchNameConstraint(opts.DNSName, constraint)
+			if ok {
 				break
 			}
 		}
@@ -178,7 +228,7 @@ func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *V
 	// being valid for encryption only, but no-one noticed. Another
 	// European CA marked its signature keys as not being valid for
 	// signatures. A different CA marked its own trusted root certificate
-	// as being invalid for certificate signing.  Another national CA
+	// as being invalid for certificate signing. Another national CA
 	// distributed a certificate to be used to encrypt data for the
 	// country’s tax authority that was marked as only being usable for
 	// digital signatures but not for encryption. Yet another CA reversed
@@ -209,17 +259,37 @@ func (c *Certificate) isValid(certType int, currentChain []*Certificate, opts *V
 // needed. If successful, it returns one or more chains where the first
 // element of the chain is c and the last element is from opts.Roots.
 //
+// If opts.Roots is nil and system roots are unavailable the returned error
+// will be of type SystemRootsError.
+//
 // WARNING: this doesn't do any revocation checking.
 func (c *Certificate) Verify(opts VerifyOptions) (chains [][]*Certificate, err error) {
+	// Platform-specific verification needs the ASN.1 contents so
+	// this makes the behavior consistent across platforms.
+	if len(c.Raw) == 0 {
+		return nil, errNotParsed
+	}
+	if opts.Intermediates != nil {
+		for _, intermediate := range opts.Intermediates.certs {
+			if len(intermediate.Raw) == 0 {
+				return nil, errNotParsed
+			}
+		}
+	}
+
 	// Use Windows's own verification and chain building.
 	if opts.Roots == nil && runtime.GOOS == "windows" {
 		return c.systemVerify(&opts)
 	}
 
+	if len(c.UnhandledCriticalExtensions) > 0 {
+		return nil, UnhandledCriticalExtension{}
+	}
+
 	if opts.Roots == nil {
 		opts.Roots = systemRootsPool()
 		if opts.Roots == nil {
-			return nil, SystemRootsError{}
+			return nil, SystemRootsError{systemRootsErr}
 		}
 	}
 
@@ -235,9 +305,13 @@ func (c *Certificate) Verify(opts VerifyOptions) (chains [][]*Certificate, err e
 		}
 	}
 
-	candidateChains, err := c.buildChains(make(map[int][][]*Certificate), []*Certificate{c}, &opts)
-	if err != nil {
-		return
+	var candidateChains [][]*Certificate
+	if opts.Roots.contains(c) {
+		candidateChains = append(candidateChains, []*Certificate{c})
+	} else {
+		if candidateChains, err = c.buildChains(make(map[int][][]*Certificate), []*Certificate{c}, &opts); err != nil {
+			return nil, err
+		}
 	}
 
 	keyUsages := opts.KeyUsages
@@ -275,8 +349,16 @@ func appendToFreshChain(chain []*Certificate, cert *Certificate) []*Certificate 
 
 func (c *Certificate) buildChains(cache map[int][][]*Certificate, currentChain []*Certificate, opts *VerifyOptions) (chains [][]*Certificate, err error) {
 	possibleRoots, failedRoot, rootErr := opts.Roots.findVerifiedParents(c)
+nextRoot:
 	for _, rootNum := range possibleRoots {
 		root := opts.Roots.certs[rootNum]
+
+		for _, cert := range currentChain {
+			if cert.Equal(root) {
+				continue nextRoot
+			}
+		}
+
 		err = root.isValid(rootCertificate, currentChain, opts)
 		if err != nil {
 			continue
@@ -289,7 +371,7 @@ nextIntermediate:
 	for _, intermediateNum := range possibleIntermediates {
 		intermediate := opts.Intermediates.certs[intermediateNum]
 		for _, cert := range currentChain {
-			if cert == intermediate {
+			if cert.Equal(intermediate) {
 				continue nextIntermediate
 			}
 		}
@@ -324,6 +406,9 @@ nextIntermediate:
 }
 
 func matchHostnames(pattern, host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	pattern = strings.TrimSuffix(pattern, ".")
+
 	if len(pattern) == 0 || len(host) == 0 {
 		return false
 	}
@@ -336,7 +421,7 @@ func matchHostnames(pattern, host string) bool {
 	}
 
 	for i, patternPart := range patternParts {
-		if patternPart == "*" {
+		if i == 0 && patternPart == "*" {
 			continue
 		}
 		if patternPart != hostParts[i] {
@@ -428,6 +513,7 @@ func checkChainForKeyUsage(chain []*Certificate, keyUsages []ExtKeyUsage) bool {
 	// by each certificate. If we cross out all the usages, then the chain
 	// is unacceptable.
 
+NextCert:
 	for i := len(chain) - 1; i >= 0; i-- {
 		cert := chain[i]
 		if len(cert.ExtKeyUsage) == 0 && len(cert.UnknownExtKeyUsage) == 0 {
@@ -438,7 +524,7 @@ func checkChainForKeyUsage(chain []*Certificate, keyUsages []ExtKeyUsage) bool {
 		for _, usage := range cert.ExtKeyUsage {
 			if usage == ExtKeyUsageAny {
 				// The certificate is explicitly good for any usage.
-				continue
+				continue NextCert
 			}
 		}
 

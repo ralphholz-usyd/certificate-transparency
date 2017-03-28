@@ -12,16 +12,16 @@ import (
 
 	ct "github.com/google/certificate-transparency/go"
 	"github.com/google/certificate-transparency/go/client"
+	"github.com/google/certificate-transparency/go/jsonclient"
 	"github.com/google/certificate-transparency/go/scanner"
-	httpclient "github.com/mreiferson/go-httpclient"
 )
 
 const (
-	// A regex which cannot match any input
-	MatchesNothingRegex = "a^"
+	// matchesNothingRegex is a regex which cannot match any input.
+	matchesNothingRegex = "a^"
 )
 
-var logUri = flag.String("log_uri", "http://ct.googleapis.com/aviator", "CT log base URI")
+var logURI = flag.String("log_uri", "http://ct.googleapis.com/aviator", "CT log base URI")
 var matchSubjectRegex = flag.String("match_subject_regex", ".*", "Regex to match CN/SAN")
 var matchIssuerRegex = flag.String("match_issuer_regex", "", "Regex to match in issuer CN")
 var precertsOnly = flag.Bool("precerts_only", false, "Only match precerts")
@@ -50,7 +50,7 @@ func chainToString(certs []ct.ASN1Cert) string {
 	var output []byte
 
 	for _, cert := range certs {
-		output = append(output, cert...)
+		output = append(output, cert.Data...)
 	}
 
 	return base64.StdEncoding.EncodeToString(output)
@@ -66,7 +66,7 @@ func createRegexes(regexValue string) (*regexp.Regexp, *regexp.Regexp) {
 	precertRegex := regexp.MustCompile(regexValue)
 	switch *precertsOnly {
 	case true:
-		certRegex = regexp.MustCompile(MatchesNothingRegex)
+		certRegex = regexp.MustCompile(matchesNothingRegex)
 	case false:
 		certRegex = precertRegex
 	}
@@ -89,25 +89,30 @@ func createMatcherFromFlags() (scanner.Matcher, error) {
 			return nil, fmt.Errorf("Invalid serialNumber %s", *serialNumber)
 		}
 		return scanner.MatchSerialNumber{SerialNumber: sn}, nil
-	} else {
-		certRegex, precertRegex := createRegexes(*matchSubjectRegex)
-		return scanner.MatchSubjectRegex{
-			CertificateSubjectRegex:    certRegex,
-			PrecertificateSubjectRegex: precertRegex}, nil
 	}
+	certRegex, precertRegex := createRegexes(*matchSubjectRegex)
+	return scanner.MatchSubjectRegex{
+		CertificateSubjectRegex:    certRegex,
+		PrecertificateSubjectRegex: precertRegex}, nil
 }
 
 func main() {
 	flag.Parse()
-	logClient := client.New(*logUri, &http.Client{
-		Transport: &httpclient.Transport{
-			ConnectTimeout:        10 * time.Second,
-			RequestTimeout:        30 * time.Second,
+	logClient, err := client.New(*logURI, &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSHandshakeTimeout:   30 * time.Second,
 			ResponseHeaderTimeout: 30 * time.Second,
 			MaxIdleConnsPerHost:   10,
 			DisableKeepAlives:     false,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
 		},
-	})
+	}, jsonclient.Options{})
+	if err != nil {
+		log.Fatal(err)
+	}
 	matcher, err := createMatcherFromFlags()
 	if err != nil {
 		log.Fatal(err)

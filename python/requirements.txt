@@ -7,8 +7,8 @@ python-gflags
 requests>=1.0
 Twisted>=12.1
 bitstring
-pycrypto>=2.5
 jsonschema
 PyGreSQL
 pyopenssl
 service_identity
+cryptography>=1.0
