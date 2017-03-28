@@ -27,7 +27,7 @@ class pgSQLCertDB(cert_db.CertDB):
             # the |cert| data is also unique but we don't force this as it would
             # create a superfluous index.
             conn.execute("CREATE TABLE IF NOT EXISTS certs("
-                         "sha256_hash BYTEA,"
+                         "sha256_hash BYTEA UNIQUE,"
                          "cert BYTEA," +
                          ', '.join(['%s %s' % (column, type_) for column, type_
                                     in cert_single_field_tables]) +
@@ -35,15 +35,16 @@ class pgSQLCertDB(cert_db.CertDB):
 
             conn.execute("CREATE TABLE IF NOT EXISTS log_certs("
                          "log INTEGER,"
-                         "id INTEGER,"
-                         "sha256_hash BYTEA)")
+                         "log_index INTEGER,"
+                         "sha256_hash BYTEA,"
+                         "PRIMARY KEY (log, log_index, sha256_hash))")
             conn.commit()
             for entry in cert_repeated_field_tables:
                 self.__create_table_for_field(conn, *entry)
                 conn.commit()
             try:
                 conn.execute("CREATE INDEX log_certs_idx "
-                             "on log_certs(log, id)  TABLESPACE ctscan_indexes")
+                             "on log_certs(log, log_index)  TABLESPACE ctscan_indexes")
 
                 conn.execute("CREATE INDEX certs_by_subject "
                              "on subject_names(name) TABLESPACE ctscan_indexes")
@@ -87,26 +88,22 @@ class pgSQLCertDB(cert_db.CertDB):
             cert_version = None if cert.version == '' else cert.version
 
             # insert relationship between this cert and the (log_id, index)
-            cursor.execute("INSERT INTO log_certs(log, id, sha256_hash) "
-                           "VALUES(%s, %s, %s) ",
-                            (log_key, index
+            cursor.execute("INSERT INTO log_certs(log, log_index, sha256_hash) "
+                           "VALUES(%s, %s, %s) ON CONFLICT DO NOTHING",
+                            (log_key, index,
                              pgdb.Binary(cert.sha256_hash),))
 
-            # check if cert already exists in DB
-            cursor.execute("SELECT * FROM certs WHERE sha256_hash = %s",
-                           (pgdb.Binary(cert.sha256_hash),))
-
-            # only insert new, unseen certs (don't store dupes)
-            if cursor.rowcount == 0:
-                cursor.execute("INSERT INTO certs(sha256_hash, cert, "
-                               "version, serial_number) VALUES(%s, %s, %s, %s) ",
-                               (pgdb.Binary(cert.sha256_hash),
-                                pgdb.Binary(cert.der),
-                                cert_version,
-                                cert.serial_number,))
+            # try to insert, knowing it may fail if the cert is already stored
+            cursor.execute("INSERT INTO certs(sha256_hash, cert, "
+                           "version, serial_number) VALUES(%s, %s, %s, %s) ",
+                           (pgdb.Binary(cert.sha256_hash),
+                            pgdb.Binary(cert.der),
+                            cert_version,
+                            cert.serial_number,))
 
         except pgdb.DatabaseError:
             # cert already exists or something went horribly wrong
+            # either way, return and carry on. Don't update other fields.
             return
 
         for sub in cert.subject:
