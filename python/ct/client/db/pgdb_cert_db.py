@@ -27,18 +27,24 @@ class pgSQLCertDB(cert_db.CertDB):
             # the |cert| data is also unique but we don't force this as it would
             # create a superfluous index.
             conn.execute("CREATE TABLE IF NOT EXISTS certs("
-                         "log INTEGER,"
-                         "id INTEGER,"
-                         "sha256_hash BYTEA UNIQUE,"
+                         "sha256_hash BYTEA,"
                          "cert BYTEA," +
                          ', '.join(['%s %s' % (column, type_) for column, type_
                                     in cert_single_field_tables]) +
-                         ", PRIMARY KEY(log, id))")
+                         ", PRIMARY KEY(sha256_hash))")
+
+            conn.execute("CREATE TABLE IF NOT EXISTS log_certs("
+                         "log INTEGER,"
+                         "id INTEGER,"
+                         "sha256_hash BYTEA)")
             conn.commit()
             for entry in cert_repeated_field_tables:
                 self.__create_table_for_field(conn, *entry)
                 conn.commit()
             try:
+                conn.execute("CREATE INDEX log_certs_idx "
+                             "on log_certs(log, id)  TABLESPACE ctscan_indexes")
+
                 conn.execute("CREATE INDEX certs_by_subject "
                              "on subject_names(name) TABLESPACE ctscan_indexes")
             except pgdb.ProgrammingError as e:
@@ -56,9 +62,9 @@ class pgSQLCertDB(cert_db.CertDB):
             table_name:   name of the table
             fields:       iterable of (column_name, type) tuples"""
         cursor.execute("CREATE TABLE IF NOT EXISTS {table_name}("
-                     "log INTEGER, cert_id INTEGER,"
+                     "cert_sha256_hash BYTEA,"
                      "{fields},"
-                     "FOREIGN KEY(log, cert_id) REFERENCES certs(log, id))"
+                     "FOREIGN KEY(cert_sha256_hash) REFERENCES certs(sha256_hash))"
                      .format(table_name=table_name,
                              fields=','.join(
                                      ["%s %s" % field for field in fields])))
@@ -80,49 +86,56 @@ class pgSQLCertDB(cert_db.CertDB):
             # Need None type for empty strings inserted into INTEGER field
             cert_version = None if cert.version == '' else cert.version
 
-            #check if cert already exists
+            # insert relationship between this cert and the (log_id, index)
+            cursor.execute("INSERT INTO log_certs(log, id, sha256_hash) "
+                           "VALUES(%s, %s, %s) ",
+                            (log_key, index
+                             pgdb.Binary(cert.sha256_hash),))
+
+            # check if cert already exists in DB
             cursor.execute("SELECT * FROM certs WHERE sha256_hash = %s",
                            (pgdb.Binary(cert.sha256_hash),))
-            if cursor.rowcount > 0:
-              return
 
-            cursor.execute("INSERT INTO certs(log, id, sha256_hash, cert, "
-                           "version, serial_number) VALUES(%s, %s, %s, %s, %s, %s) ",
-                           (log_key, index,
-                            pgdb.Binary(cert.sha256_hash),
-                            pgdb.Binary(cert.der),
-                            cert_version,
-                            cert.serial_number,))
+            # only insert new, unseen certs (don't store dupes)
+            if cursor.rowcount == 0:
+                cursor.execute("INSERT INTO certs(sha256_hash, cert, "
+                               "version, serial_number) VALUES(%s, %s, %s, %s) ",
+                               (pgdb.Binary(cert.sha256_hash),
+                                pgdb.Binary(cert.der),
+                                cert_version,
+                                cert.serial_number,))
+
         except pgdb.DatabaseError:
             # cert already exists or something went horribly wrong
             return
+
         for sub in cert.subject:
-            cursor.execute("INSERT INTO subject(log, cert_id, type, name)"
-                           "VALUES(%s, %s, %s, %s)",
-                           (log_key, index, sub.type, sub.value))
+            cursor.execute("INSERT INTO subject(cert_sha256_hash, type, name)"
+                           "VALUES(%s, %s, %s)",
+                           (pgdb.Binary(cert.sha256_hash), sub.type, sub.value))
             if sub.type == "CN":
-                cursor.execute("INSERT INTO subject_names(log, cert_id, name)"
-                               "VALUES(%s, %s, %s)",
-                               (log_key, index, sub.value))
+                cursor.execute("INSERT INTO subject_names(cert_sha256_hash, name)"
+                               "VALUES(%s, %s)",
+                               (pgdb.Binary(cert.sha256_hash), sub.value))
 
         for alt in cert.subject_alternative_names:
-            cursor.execute("INSERT INTO subject_alternative_names(log, cert_id,"
-                           "type, name) VALUES(%s, %s, %s, %s)",
-                           (log_key, index, alt.type, alt.value))
+            cursor.execute("INSERT INTO subject_alternative_names(cert_sha256_hash,"
+                           "type, name) VALUES(%s, %s, %s)",
+                           (pgdb.Binary(cert.sha256_hash), alt.type, alt.value))
             if alt.type == "dNSName":
-                cursor.execute("INSERT INTO subject_names(log, cert_id, name)"
-                               "VALUES(%s, %s, %s)",
-                               (log_key, index, alt.value))
+                cursor.execute("INSERT INTO subject_names(cert_sha256_hash, name)"
+                               "VALUES(%s, %s)",
+                               (pgdb.Binary(cert.sha256_hash), alt.value))
 
         for iss in cert.issuer:
-            cursor.execute("INSERT INTO issuer(log, cert_id, type, name)"
-                           "VALUES(%s, %s, %s, %s)",
-                           (log_key, index, iss.type, iss.value))
+            cursor.execute("INSERT INTO issuer(cert_sha256_hash, type, name)"
+                           "VALUES(%s, %s, %s)",
+                           (pgdb.Binary(cert.sha256_hash), iss.type, iss.value))
 
         for iss in cert.root_issuer:
-            cursor.execute("INSERT INTO root_issuer(log, cert_id, type, name)"
-                           "VALUES(%s, %s, %s, %s)",
-                           (log_key, index, iss.type, iss.value))
+            cursor.execute("INSERT INTO root_issuer(cert_sha256_hash, type, name)"
+                           "VALUES(%s, %s, %s)",
+                           (pgdb.Binary(cert.sha256_hash), iss.type, iss.value))
 
     def store_certs_desc(self, certs, log_key):
         """Store certificates using their descriptions.
@@ -208,7 +221,7 @@ class pgSQLCertDB(cert_db.CertDB):
         query = """
                 SELECT certs.cert as cert, subject_names.name as name
                   FROM certs, subject_names
-                 WHERE name >= %s AND certs.id = subject_names.cert_id
+                 WHERE name >= %s AND certs.sha256_hash = subject_names.cert_sha256_hash
                  ORDER BY name ASC
                 """
         query_params = (".".join(prefix),)
