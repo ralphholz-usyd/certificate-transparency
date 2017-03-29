@@ -99,9 +99,8 @@ class pgSQLCertDB(cert_db.CertDB):
                              pgdb.Binary(cert.sha256_hash),))
 
         except pgdb.DatabaseError as err:
-            if 'duplicate key' not in str(err):
-                logging.error('pgdb store_log_cert: %s' % err)
-            return
+            logging.error('pgdb store_log_cert: %s' % err)
+            raise err
 
     def __store_cert(self, cert, index, log_key, cursor):
         try:
@@ -119,9 +118,8 @@ class pgSQLCertDB(cert_db.CertDB):
         except pgdb.DatabaseError as err:
             # cert already exists or something went horribly wrong
             # either way, return and carry on. Don't update other fields.
-            if 'duplicate key' not in str(err):
-                logging.error('pgdb store_log_cert: %s' % err)
-            return
+            logging.error('pgdb store_log_cert: %s' % err)
+            raise err
 
         for sub in cert.subject:
             cursor.execute("INSERT INTO subject(cert_sha256_hash, type, name)"
@@ -151,6 +149,15 @@ class pgSQLCertDB(cert_db.CertDB):
                            "VALUES(%s, %s, %s)",
                            (pgdb.Binary(cert.sha256_hash), iss.type, iss.value))
 
+    def __cert_hash_exists(self, cert_sha256_hash):
+        with self.__mgr.get_connection() as conn:
+            res = conn.execute("SELECT 1 AS res FROM certs WHERE sha256_hash = %s",
+                               (pgdb.Binary(cert_sha256_hash),))
+            try:
+                return str(res.next()["res"]) == '1'
+            except StopIteration:
+                return False
+
     def store_certs_desc(self, certs, log_key):
         """Store certificates using their descriptions.
 
@@ -160,10 +167,17 @@ class pgSQLCertDB(cert_db.CertDB):
         with self.__mgr.get_connection() as conn:
             cursor = conn.cursor()
             for cert in certs:
-                self.__store_log_cert(cert[0], cert[1], log_key, cursor)
-                conn.commit()
-                self.__store_cert(cert[0], cert[1], log_key, cursor)
-                conn.commit()
+                try:
+                    self.__store_log_cert(cert[0], cert[1], log_key, cursor)
+
+                    if not self.__cert_hash_exists(cert[0].sha256_hash):
+                        self.__store_cert(cert[0], cert[1], log_key, cursor)
+                except pgdb.DatabaseError as err:
+                    # COMMIT instead of ROLLBACK because these are integrity
+                    # errors, and we don't want to lose the rest of the certs
+                    # in this batch just because one cert already existed!
+                    logging.error("pgdb store_certs_desc: error encountered, committing NOW")
+                    conn.commit()
 
     def store_cert_desc(self, cert, index, log_key):
         """Store a certificate using its description.
@@ -177,6 +191,7 @@ class pgSQLCertDB(cert_db.CertDB):
     def get_cert_by_sha256_hash(self, cert_sha256_hash):
         """Fetch a certificate with a matching SHA256 hash
         Args:
+
             cert_sha256_hash: the SHA256 hash of the certificate
         Returns:
             A DER-encoded certificate, or None if the cert is not found."""
