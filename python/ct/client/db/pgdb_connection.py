@@ -50,6 +50,7 @@ class pgSQLConnection(object):
 
     def __exit__(self, exc_type, exc_value, traceback):
         """Commit or rollback, and close the connection."""
+        self.__conn.commit()
         ret = self.__conn.__exit__(exc_type, exc_value, traceback)
         if not self.__keepalive:
             self.__conn.close()

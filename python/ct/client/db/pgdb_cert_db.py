@@ -33,26 +33,21 @@ class pgSQLCertDB(cert_db.CertDB):
                          ', '.join(['%s %s' % (column, type_) for column, type_
                                     in cert_single_field_tables]) +
                          ", PRIMARY KEY(sha256_hash))")
-            conn.commit()
 
             conn.execute("CREATE TABLE IF NOT EXISTS log_certs("
                          "log INTEGER,"
                          "log_index INTEGER,"
                          "sha256_hash BYTEA,"
                          "PRIMARY KEY (log, log_index, sha256_hash))")
-            conn.commit()
 
             for entry in cert_repeated_field_tables:
                 self.__create_table_for_field(conn, *entry)
-                conn.commit()
             try:
                 conn.execute("CREATE INDEX log_certs_idx "
                              "on log_certs(log, log_index)  TABLESPACE ctscan_indexes")
-                conn.commit()
 
                 conn.execute("CREATE INDEX certs_by_subject "
                              "on subject_names(name) TABLESPACE ctscan_indexes")
-                conn.commit()
             except pgdb.ProgrammingError as e:
                 if "already exists" not in str(e):
                     raise e
@@ -149,14 +144,10 @@ class pgSQLCertDB(cert_db.CertDB):
                            "VALUES(%s, %s, %s)",
                            (pgdb.Binary(cert.sha256_hash), iss.type, iss.value))
 
-    def __cert_hash_exists(self, cert_sha256_hash):
-        with self.__mgr.get_connection() as conn:
-            res = conn.execute("SELECT 1 AS res FROM certs WHERE sha256_hash = %s",
-                               (pgdb.Binary(cert_sha256_hash),))
-            try:
-                return str(res.next()["res"]) == '1'
-            except StopIteration:
-                return False
+    def __cert_hash_exists(self, cert_sha256_hash, cursor):
+        return (len(cursor.execute("SELECT 1 FROM certs "
+                                   "WHERE sha256_hash = %s LIMIT 1",
+                    (pgdb.Binary(cert[0].sha256_hash),)).fetchall()) == 1)
 
     def store_certs_desc(self, certs, log_key):
         """Store certificates using their descriptions.
@@ -170,7 +161,7 @@ class pgSQLCertDB(cert_db.CertDB):
                 try:
                     self.__store_log_cert(cert[0], cert[1], log_key, cursor)
 
-                    if not self.__cert_hash_exists(cert[0].sha256_hash):
+                    if not self.__cert_hash_exists(cert[0].sha256_hash, cursor):
                         self.__store_cert(cert[0], cert[1], log_key, cursor)
                 except pgdb.DatabaseError as err:
                     # COMMIT instead of ROLLBACK because these are integrity
