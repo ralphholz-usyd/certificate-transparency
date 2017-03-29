@@ -1,5 +1,6 @@
 import pgdb
 import gflags
+import logging
 
 from ct.client.db import cert_db
 from ct.client.db import cert_desc
@@ -32,6 +33,7 @@ class pgSQLCertDB(cert_db.CertDB):
                          ', '.join(['%s %s' % (column, type_) for column, type_
                                     in cert_single_field_tables]) +
                          ", PRIMARY KEY(sha256_hash))")
+            conn.commit()
 
             conn.execute("CREATE TABLE IF NOT EXISTS log_certs("
                          "log INTEGER,"
@@ -39,15 +41,18 @@ class pgSQLCertDB(cert_db.CertDB):
                          "sha256_hash BYTEA,"
                          "PRIMARY KEY (log, log_index, sha256_hash))")
             conn.commit()
+
             for entry in cert_repeated_field_tables:
                 self.__create_table_for_field(conn, *entry)
                 conn.commit()
             try:
                 conn.execute("CREATE INDEX log_certs_idx "
                              "on log_certs(log, log_index)  TABLESPACE ctscan_indexes")
+                conn.commit()
 
                 conn.execute("CREATE INDEX certs_by_subject "
                              "on subject_names(name) TABLESPACE ctscan_indexes")
+                conn.commit()
             except pgdb.ProgrammingError as e:
                 if "already exists" not in str(e):
                     raise e
@@ -82,7 +87,7 @@ class pgSQLCertDB(cert_db.CertDB):
     def __compare_processed_names(prefix, name):
         return prefix == name[:len(prefix)]
 
-    def __store_cert(self, cert, index, log_key, cursor):
+    def __store_log_cert(self, cert, index, log_key, cursor):
         try:
             # Need None type for empty strings inserted into INTEGER field
             cert_version = None if cert.version == '' else cert.version
@@ -93,6 +98,16 @@ class pgSQLCertDB(cert_db.CertDB):
                             (log_key, index,
                              pgdb.Binary(cert.sha256_hash),))
 
+        except pgdb.DatabaseError as err:
+            if 'duplicate key' not in str(err):
+                logging.error('pgdb store_log_cert: %s' % err)
+            return
+
+    def __store_cert(self, cert, index, log_key, cursor):
+        try:
+            # Need None type for empty strings inserted into INTEGER field
+            cert_version = None if cert.version == '' else cert.version
+
             # try to insert, knowing it may fail if the cert is already stored
             cursor.execute("INSERT INTO certs(sha256_hash, cert, "
                            "version, serial_number) VALUES(%s, %s, %s, %s) ",
@@ -101,9 +116,11 @@ class pgSQLCertDB(cert_db.CertDB):
                             cert_version,
                             cert.serial_number,))
 
-        except pgdb.DatabaseError:
+        except pgdb.DatabaseError as err:
             # cert already exists or something went horribly wrong
             # either way, return and carry on. Don't update other fields.
+            if 'duplicate key' not in str(err):
+                logging.error('pgdb store_log_cert: %s' % err)
             return
 
         for sub in cert.subject:
@@ -143,7 +160,10 @@ class pgSQLCertDB(cert_db.CertDB):
         with self.__mgr.get_connection() as conn:
             cursor = conn.cursor()
             for cert in certs:
+                self.__store_log_cert(cert[0], cert[1], log_key, cursor)
+                conn.commit()
                 self.__store_cert(cert[0], cert[1], log_key, cursor)
+                conn.commit()
 
     def store_cert_desc(self, cert, index, log_key):
         """Store a certificate using its description.

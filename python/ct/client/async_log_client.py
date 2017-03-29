@@ -181,6 +181,7 @@ class EntryProducer(object):
             # if it's not last retry and failure wasn't our fault we retry
             if (retries < FLAGS.get_entries_max_retries and
                 not failure.check(log_client.HTTPClientError)):
+		logging.info("Error (%s): %s" % (self._uri, failure))
                 logging.info("Retrying get-entries for range <%d, %d> retry: %d"
                              % (first, last, retries))
                 d = task.deferLater(self._reactor,
