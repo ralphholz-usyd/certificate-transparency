@@ -147,7 +147,7 @@ class pgSQLCertDB(cert_db.CertDB):
     def __cert_hash_exists(self, cert_sha256_hash, cursor):
         return (len(cursor.execute("SELECT 1 FROM certs "
                                    "WHERE sha256_hash = %s LIMIT 1",
-                    (pgdb.Binary(cert[0].sha256_hash),)).fetchall()) == 1)
+                    (pgdb.Binary(cert_sha256_hash),)).fetchall()) == 1)
 
     def store_certs_desc(self, certs, log_key):
         """Store certificates using their descriptions.
