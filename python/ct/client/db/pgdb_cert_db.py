@@ -1,3 +1,4 @@
+import time
 import pgdb
 import gflags
 import logging
@@ -6,6 +7,8 @@ from ct.client.db import cert_db
 from ct.client.db import cert_desc
 
 FLAGS = gflags.FLAGS
+
+_MAX_RETRY = 10
 
 class pgSQLCertDB(cert_db.CertDB):
     def __init__(self, connection_manager):
@@ -102,17 +105,26 @@ class pgSQLCertDB(cert_db.CertDB):
             # Need None type for empty strings inserted into INTEGER field
             cert_version = None if cert.version == '' else cert.version
 
-            # try to insert, knowing it may fail if the cert is already stored
+            # conditionally insert if the cert does not exist already
             cursor.execute("INSERT INTO certs(sha256_hash, cert, "
-                           "version, serial_number) VALUES(%s, %s, %s, %s) ",
+                           "version, serial_number) VALUES(%s, %s, %s, %s) "
+                           "WHERE NOT EXISTS (
+                               SELECT 1
+                                 FROM certs
+                                WHERE sha256_hash = %s) ",
                            (pgdb.Binary(cert.sha256_hash),
                             pgdb.Binary(cert.der),
                             cert_version,
-                            cert.serial_number,))
+                            cert.serial_number,
+                            pgdb.Binary(cert.sha256_hash),)
+
+            # if the cert already existed, just stop here
+            if cursor.rowcount < 1:
+                return
 
         except pgdb.DatabaseError as err:
             # cert already exists or something went horribly wrong
-            # either way, return and carry on. Don't update other fields.
+            # either way, stop right here
             logging.error('pgdb store_log_cert: %s' % err)
             raise err
 
@@ -155,20 +167,34 @@ class pgSQLCertDB(cert_db.CertDB):
         Args:
             certs:         iterable of (CertificateDescription, index) tuples
             log_key:       log id in LogDB"""
-        with self.__mgr.get_connection() as conn:
-            cursor = conn.cursor()
-            for cert in certs:
-                try:
-                    self.__store_log_cert(cert[0], cert[1], log_key, cursor)
 
-                    if not self.__cert_hash_exists(cert[0].sha256_hash, cursor):
+        logging.info("pgdb store_certs_desc: storing %s certs" % len(certs))
+        _delta = time.time()
+        certs.sort(key=lambda t: t[0][0].sha256_hash)
+        _delta = time.time() - _delta
+        logging.info("pgdb store_certs_desc: sorted %s certs in %s seconds"
+                     % (len(certs), _delta))
+
+        with self.__mgr.get_connection() as conn:
+            for i in range(_MAX_RETRY):
+                try:
+                    cursor = conn.cursor()
+                    for cert in certs:
+                        self.__store_log_cert(cert[0], cert[1], log_key, cursor)
                         self.__store_cert(cert[0], cert[1], log_key, cursor)
-                except pgdb.DatabaseError as err:
-                    # COMMIT instead of ROLLBACK because these are integrity
-                    # errors, and we don't want to lose the rest of the certs
-                    # in this batch just because one cert already existed!
-                    logging.error("pgdb store_certs_desc: error encountered, committing NOW")
                     conn.commit()
+                    return
+
+                except pgdb.DatabaseError as err:
+                    conn.rollback()
+
+                    if i+1 < _MAX_RETRY:
+                        logging.error("pgdb store_certs_desc: error encountered, "
+                                      "ROLLBACK and retry (%s/%s)" % (i+2, _MAX_RETRY))
+                    else:
+                        logging.exception("pgdb store_certs_desc: error encountered,
+                          could not store cert batch after %s attempts" % (_MAX_RETRY))
+                        raise err
 
     def store_cert_desc(self, cert, index, log_key):
         """Store a certificate using its description.
