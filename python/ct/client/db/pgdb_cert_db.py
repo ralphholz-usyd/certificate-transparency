@@ -106,17 +106,18 @@ class pgSQLCertDB(cert_db.CertDB):
             cert_version = None if cert.version == '' else cert.version
 
             # conditionally insert if the cert does not exist already
-            cursor.execute("INSERT INTO certs(sha256_hash, cert, "
-                           "version, serial_number) VALUES(%s, %s, %s, %s) "
-                           "WHERE NOT EXISTS (
+            cursor.execute("""INSERT INTO certs(sha256_hash, cert,
+                           version, serial_number)
+                           SELECT %s, %s, %s, %s
+                           WHERE NOT EXISTS (
                                SELECT 1
                                  FROM certs
-                                WHERE sha256_hash = %s) ",
+                                WHERE sha256_hash = %s)""",
                            (pgdb.Binary(cert.sha256_hash),
                             pgdb.Binary(cert.der),
                             cert_version,
                             cert.serial_number,
-                            pgdb.Binary(cert.sha256_hash),)
+                            pgdb.Binary(cert.sha256_hash),))
 
             # if the cert already existed, just stop here
             if cursor.rowcount < 1:
@@ -169,11 +170,20 @@ class pgSQLCertDB(cert_db.CertDB):
             log_key:       log id in LogDB"""
 
         logging.info("pgdb store_certs_desc: storing %s certs" % len(certs))
+
+        # measure sort time
         _delta = time.time()
-        certs.sort(key=lambda t: t[0][0].sha256_hash)
+
+        # sort certificates in the batch by hash. Having a reliable partial
+        # order across all transactions reduces chance of a deadlock.
+        certs.sort(key=lambda c: c[0].sha256_hash)
+
         _delta = time.time() - _delta
         logging.info("pgdb store_certs_desc: sorted %s certs in %s seconds"
                      % (len(certs), _delta))
+
+        # measure commit time
+        _delta = time.time()
 
         with self.__mgr.get_connection() as conn:
             for i in range(_MAX_RETRY):
@@ -183,17 +193,20 @@ class pgSQLCertDB(cert_db.CertDB):
                         self.__store_log_cert(cert[0], cert[1], log_key, cursor)
                         self.__store_cert(cert[0], cert[1], log_key, cursor)
                     conn.commit()
+                    _delta = time.time() - _delta
+                    logging.info("pgdb store_certs_desc: COMMIT %s certs in %s seconds"
+                                 % (len(certs), _delta))
                     return
 
-                except pgdb.DatabaseError as err:
+                except Exception as err:
                     conn.rollback()
 
                     if i+1 < _MAX_RETRY:
                         logging.error("pgdb store_certs_desc: error encountered, "
                                       "ROLLBACK and retry (%s/%s)" % (i+2, _MAX_RETRY))
                     else:
-                        logging.exception("pgdb store_certs_desc: error encountered,
-                          could not store cert batch after %s attempts" % (_MAX_RETRY))
+                        logging.exception("pgdb store_certs_desc: error encountered, "
+                          "could not store cert batch after %s attempts" % (_MAX_RETRY))
                         raise err
 
     def store_cert_desc(self, cert, index, log_key):
