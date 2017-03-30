@@ -182,17 +182,31 @@ class pgSQLCertDB(cert_db.CertDB):
         logging.info("pgdb store_certs_desc: sorted %s certs in %s seconds"
                      % (len(certs), _delta))
 
-        # measure commit time
-        _delta = time.time()
 
         with self.__mgr.get_connection() as conn:
             for i in range(_MAX_RETRY):
                 try:
+                    # measure commit time
+                    _delta = time.time()
+
                     cursor = conn.cursor()
                     for cert in certs:
+                        _delta_c = time.time()
                         self.__store_log_cert(cert[0], cert[1], log_key, cursor)
+
+                        _delta_c = time.time() - _delta_c
+                        logging.info("pgdb store_certs_desc: INSERT log_cert in %s seconds"
+                                 % _delta_c)
+
+                        _delta_c = time.time()
                         self.__store_cert(cert[0], cert[1], log_key, cursor)
+
+                        _delta_c = time.time() - _delta_c
+                        logging.info("pgdb store_certs_desc: INSERT cert+data in %s seconds"
+                                 % _delta_c)
+
                     conn.commit()
+
                     _delta = time.time() - _delta
                     logging.info("pgdb store_certs_desc: COMMIT %s certs in %s seconds"
                                  % (len(certs), _delta))
